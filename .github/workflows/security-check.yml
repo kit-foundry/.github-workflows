@@ -1,0 +1,50 @@
+name: Security Check
+on:
+  workflow_call:
+    inputs:
+      severity-threshold:
+        description: 'Minimum severity to block (moderate, high, critical)'
+        required: false
+        type: string
+        default: 'moderate'
+
+jobs:
+  dependabot-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: read
+
+    steps:
+      - name: Check Dependabot Alerts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Checking for ${{ inputs.severity-threshold }}+ severity dependabot alerts..."
+
+          # Build severity filter based on threshold
+          case "${{ inputs.severity-threshold }}" in
+            critical)
+              SEVERITIES="critical"
+              ;;
+            high)
+              SEVERITIES="critical or .security_advisory.severity == \"high\""
+              ;;
+            moderate|*)
+              SEVERITIES="critical or .security_advisory.severity == \"high\" or .security_advisory.severity == \"moderate\""
+              ;;
+          esac
+
+          ALERTS=$(gh api repos/${{ github.repository }}/dependabot/alerts \
+            --jq "[.[] | select(.state == \"open\" and (.security_advisory.severity == \"$SEVERITIES\"))]")
+
+          ALERT_COUNT=$(echo "$ALERTS" | jq 'length')
+
+          if [ "$ALERT_COUNT" -gt 0 ]; then
+            echo "::error::Found $ALERT_COUNT open dependabot alert(s) with ${{ inputs.severity-threshold }}+ severity"
+            echo "::error::Please resolve these alerts before merging:"
+            echo "$ALERTS" | jq -r '.[] | "- \(.security_advisory.severity | ascii_upcase): \(.dependency.package.name) - \(.security_advisory.summary)"'
+            exit 1
+          else
+            echo "::notice::No ${{ inputs.severity-threshold }}+ severity dependabot alerts found."
+          fi
